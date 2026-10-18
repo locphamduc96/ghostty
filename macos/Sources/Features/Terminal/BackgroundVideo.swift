@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import CoreImage
 import OSLog
 
@@ -9,7 +10,7 @@ import OSLog
 /// `AVPlayerLayer`, so many tabs still decode one stream and play one audio
 /// track. Page URLs (YouTube and the like) are resolved to a direct stream
 /// with `yt-dlp`.
-final class BackgroundVideoPlayer {
+final class BackgroundVideoPlayer: ObservableObject {
     static let shared = BackgroundVideoPlayer()
 
     private static let logger = Logger(
@@ -25,7 +26,15 @@ final class BackgroundVideoPlayer {
         return player
     }()
 
-    private(set) var source: String?
+    @Published private(set) var source: String?
+
+    /// Paused by hand from the Background Video panel or menu. Unlike the
+    /// automatic pause, this holds even while a window showing the video is
+    /// visible, until it is resumed or another video is played.
+    @Published private(set) var isPaused = false
+
+    /// From `background-video-play-in-background`.
+    private(set) var playsInBackground = false
 
     /// Bumped on every source change or retry so late results from an older
     /// load are dropped.
@@ -49,9 +58,14 @@ final class BackgroundVideoPlayer {
     /// keeps redirecting, so an item that isn't ready by then counts as failed.
     private static let loadTimeout: TimeInterval = 30
 
+    /// The largest frame the player may pick from an adaptive stream. The
+    /// video is blurred and dimmed, so more pixels only cost CPU.
+    private static let maxResolution = CGSize(width: 1920, height: 1080)
+
     func setSource(_ newSource: String?) {
         guard newSource != source else { return }
         source = newSource
+        isPaused = false
         generation += 1
         retryDelay = Self.initialRetryDelay
         load()
@@ -70,6 +84,18 @@ final class BackgroundVideoPlayer {
     func setVolume(_ volume: Double) {
         player.volume = Float(volume)
         player.isMuted = volume <= 0
+    }
+
+    func setPaused(_ paused: Bool) {
+        guard paused != isPaused else { return }
+        isPaused = paused
+        updatePlayback()
+    }
+
+    func setPlaysInBackground(_ enabled: Bool) {
+        guard enabled != playsInBackground else { return }
+        playsInBackground = enabled
+        updatePlayback()
     }
 
     /// Applies tint and blur to every window right away, for the sliders in
@@ -91,12 +117,14 @@ final class BackgroundVideoPlayer {
         updatePlayback()
     }
 
-    /// Plays only while at least one window showing the video is visible.
+    /// Plays while at least one window showing the video is visible, or while
+    /// any such window exists when `playsInBackground` is set. A manual pause
+    /// overrides both.
     func updatePlayback() {
-        let visible = views.allObjects.contains {
-            $0.window?.occlusionState.contains(.visible) ?? false
-        }
-        if visible && player.currentItem != nil {
+        let windows = views.allObjects.compactMap(\.window)
+        let wanted = !windows.isEmpty
+            && (playsInBackground || windows.contains { $0.occlusionState.contains(.visible) })
+        if wanted && !isPaused && player.currentItem != nil {
             player.play()
         } else {
             player.pause()
@@ -125,17 +153,23 @@ final class BackgroundVideoPlayer {
     }
 
     private func makeItem(for stream: Stream) -> AVPlayerItem {
-        guard let playlist = stream.playlist else {
+        let item: AVPlayerItem
+        if let playlist = stream.playlist {
+            let loader = PlaylistLoader(playlist: playlist)
+            let asset = AVURLAsset(url: PlaylistLoader.url)
+            asset.resourceLoader.setDelegate(loader, queue: .main)
+            playlistLoader = loader
+            item = AVPlayerItem(asset: asset)
+        } else {
             let headers = stream.headers
             let options: [String: Any] = headers.isEmpty ? [:] : ["AVURLAssetHTTPHeaderFieldsKey": headers]
-            return AVPlayerItem(asset: AVURLAsset(url: stream.url, options: options))
+            item = AVPlayerItem(asset: AVURLAsset(url: stream.url, options: options))
         }
 
-        let loader = PlaylistLoader(playlist: playlist)
-        let asset = AVURLAsset(url: PlaylistLoader.url)
-        asset.resourceLoader.setDelegate(loader, queue: .main)
-        playlistLoader = loader
-        return AVPlayerItem(asset: asset)
+        // Direct HLS links skip the playlist narrowing above, so cap what the
+        // player may pick from them. Plain files play at their own size.
+        item.preferredMaximumResolution = Self.maxResolution
+        return item
     }
 
     private func setItem(_ item: AVPlayerItem?) {

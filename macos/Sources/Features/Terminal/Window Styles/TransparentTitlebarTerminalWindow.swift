@@ -13,6 +13,22 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
     private var tabGroupWindowsObservation: NSKeyValueObservation?
     private var tabBarVisibleObservation: NSKeyValueObservation?
 
+    /// Set while a `background-video` plays behind the terminal. The video
+    /// then also fills the titlebar area, so the titlebar draws no background
+    /// of its own and the content extends underneath it.
+    var showsBackgroundVideo = false {
+        didSet {
+            guard showsBackgroundVideo != oldValue, let lastSurfaceConfig else { return }
+            syncAppearance(lastSurfaceConfig)
+        }
+    }
+
+    /// The tabs style subclass builds its own toolbar titlebar, so only the
+    /// plain transparent style lets the video through.
+    private var videoFillsTitlebar: Bool {
+        showsBackgroundVideo && derivedConfig.macosTitlebarStyle == .transparent
+    }
+
     deinit {
         tabGroupWindowsObservation?.invalidate()
         tabBarVisibleObservation?.invalidate()
@@ -68,6 +84,8 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         // Save our config in case we need to reapply
         lastSurfaceConfig = surfaceConfig
 
+        syncBackgroundVideoStyle()
+
         // Every time we change appearance, set KVO up again in case any of our
         // references changed (e.g. tabGroup is new).
         setupKVO()
@@ -76,6 +94,22 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
             syncAppearanceTahoe(surfaceConfig)
         } else {
             syncAppearanceVentura(surfaceConfig)
+        }
+    }
+
+    /// Lets the content extend under the titlebar while the video fills it.
+    private func syncBackgroundVideoStyle() {
+        // Changing the style mask in fullscreen can break non-native fullscreen,
+        // see `HiddenTitlebarTerminalWindow`. It is synced again on the next
+        // appearance change after leaving fullscreen.
+        guard !styleMask.contains(.fullScreen),
+              !(terminalController?.fullscreenStyle?.isFullscreen ?? false),
+              styleMask.contains(.fullSizeContentView) != videoFillsTitlebar else { return }
+
+        if videoFillsTitlebar {
+            styleMask.insert(.fullSizeContentView)
+        } else {
+            styleMask.remove(.fullSizeContentView)
         }
     }
 
@@ -96,7 +130,7 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
             let isTransparentTitlebar = derivedConfig.macosTitlebarStyle == .transparent ||
             derivedConfig.macosTitlebarStyle == .tabs
 
-            titlebarView.layer?.backgroundColor = (isGlassStyle && isTransparentTitlebar)
+            titlebarView.layer?.backgroundColor = (videoFillsTitlebar || (isGlassStyle && isTransparentTitlebar))
                 ? NSColor.clear.cgColor
                 : preferredBackgroundColor?.cgColor
         }
@@ -122,7 +156,9 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
 
         // Setup the titlebar background color to match ours
         titlebarContainer.wantsLayer = true
-        titlebarContainer.layer?.backgroundColor = preferredBackgroundColor?.cgColor
+        titlebarContainer.layer?.backgroundColor = videoFillsTitlebar
+            ? NSColor.clear.cgColor
+            : preferredBackgroundColor?.cgColor
 
         // See the docs for the function that sets this to true on why
         effectViewIsHidden = false

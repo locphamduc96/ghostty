@@ -718,8 +718,17 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// `background-opacity` only applies once the video is turned off.
 ///
 /// A single video is shared by every window and pauses while no window
-/// showing it is visible.
+/// showing it is visible, unless `background-video-play-in-background` is
+/// enabled.
 @"background-video": ?[:0]const u8 = null,
+
+/// Keep `background-video` playing while no window showing it is visible,
+/// for example when the windows are covered by other apps or minimized.
+/// By default the video pauses then, to save CPU and battery.
+///
+/// This is useful to keep the audio going, or so the video is not paused
+/// when switching back. The video still stops while no window is open.
+@"background-video-play-in-background": bool = false,
 
 /// How strongly the background color covers `background-video`, from `0`
 /// (only the video) to `1` (the video is hidden).

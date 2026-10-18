@@ -102,6 +102,8 @@ extension TerminalViewContainer {
     private func updateBackgroundVideo(_ config: Ghostty.Config, tintColor: NSColor) {
         BackgroundVideoPlayer.shared.setSource(config.backgroundVideo)
         BackgroundVideoPlayer.shared.setVolume(config.backgroundVideoVolume)
+        BackgroundVideoPlayer.shared.setPlaysInBackground(config.backgroundVideoPlayInBackground)
+        (window as? TransparentTitlebarTerminalWindow)?.showsBackgroundVideo = config.backgroundVideo != nil
 
         guard config.backgroundVideo != nil else {
             backgroundVideoView?.removeFromSuperview()

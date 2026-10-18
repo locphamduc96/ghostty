@@ -525,6 +525,14 @@ extension Ghostty {
             return v.clamped(to: 0...1)
         }
 
+        var backgroundVideoPlayInBackground: Bool {
+            guard let config = self.config else { return false }
+            var v = false
+            let key = "background-video-play-in-background"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var unfocusedSplitOpacity: Double {
             guard let config = self.config else { return 1 }
             var opacity: Double = 0.85

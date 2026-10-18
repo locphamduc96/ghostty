@@ -14,6 +14,7 @@ enum BackgroundVideoSettings {
         var opacity: Double
         var blur: Double
         var volume: Double
+        var playInBackground: Bool
     }
 
     static var configURL: URL {
@@ -38,6 +39,7 @@ enum BackgroundVideoSettings {
             background-video-opacity = \(String(format: "%.2f", values.opacity))
             background-video-blur = \(String(format: "%.1f", values.blur))
             background-video-volume = \(String(format: "%.2f", values.volume))
+            background-video-play-in-background = \(values.playInBackground)
 
             """
         try FileManager.default.createDirectory(
@@ -49,7 +51,7 @@ enum BackgroundVideoSettings {
 
 /// View > Background Video… (Cmd+Shift+B): a floating panel to pick the
 /// video and tune it while watching the terminal.
-final class BackgroundVideoPanel: NSObject {
+final class BackgroundVideoPanel: NSObject, NSMenuItemValidation {
     static let shared = BackgroundVideoPanel()
 
     private let model = BackgroundVideoPanelModel()
@@ -63,8 +65,30 @@ final class BackgroundVideoPanel: NSObject {
             keyEquivalent: "b")
         item.keyEquivalentModifierMask = [.command, .shift]
         item.target = shared
+
+        // Pausing is something to do while working, so it also gets a menu
+        // item with a shortcut, not only the button in the panel.
+        let pauseItem = NSMenuItem(
+            title: "Pause Background Video",
+            action: #selector(togglePause(_:)),
+            keyEquivalent: "b")
+        pauseItem.keyEquivalentModifierMask = [.command, .option]
+        pauseItem.target = shared
+
         menu.addItem(.separator())
         menu.addItem(item)
+        menu.addItem(pauseItem)
+    }
+
+    @objc func togglePause(_ sender: Any?) {
+        model.togglePause()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(togglePause(_:)) else { return true }
+        let player = BackgroundVideoPlayer.shared
+        menuItem.title = player.isPaused ? "Resume Background Video" : "Pause Background Video"
+        return player.source != nil
     }
 
     @objc func show(_ sender: Any?) {
@@ -113,6 +137,10 @@ final class BackgroundVideoPanelModel: ObservableObject {
         didSet { tuningDidChange() }
     }
 
+    @Published var playInBackground = false {
+        didSet { tuningDidChange() }
+    }
+
     /// The saved video, as opposed to `link`, which may still be being typed.
     private var source: String?
     private var pendingSave: DispatchWorkItem?
@@ -130,7 +158,13 @@ final class BackgroundVideoPanelModel: ObservableObject {
         opacity = config.backgroundVideoOpacity
         blur = config.backgroundVideoBlur
         volume = config.backgroundVideoVolume
+        playInBackground = config.backgroundVideoPlayInBackground
         error = nil
+    }
+
+    func togglePause() {
+        let player = BackgroundVideoPlayer.shared
+        player.setPaused(!player.isPaused)
     }
 
     func play() {
@@ -169,6 +203,7 @@ final class BackgroundVideoPanelModel: ObservableObject {
         guard !isResetting else { return }
         BackgroundVideoPlayer.shared.preview(opacity: opacity, blurRadius: blur)
         BackgroundVideoPlayer.shared.setVolume(volume)
+        BackgroundVideoPlayer.shared.setPlaysInBackground(playInBackground)
 
         pendingSave?.cancel()
         let save = DispatchWorkItem { [weak self] in self?.save() }
@@ -180,7 +215,12 @@ final class BackgroundVideoPanelModel: ObservableObject {
         pendingSave?.cancel()
         pendingSave = nil
         do {
-            try BackgroundVideoSettings.save(.init(source: source, opacity: opacity, blur: blur, volume: volume))
+            try BackgroundVideoSettings.save(.init(
+                source: source,
+                opacity: opacity,
+                blur: blur,
+                volume: volume,
+                playInBackground: playInBackground))
         } catch {
             self.error = "Could not save \(BackgroundVideoSettings.configURL.path): \(error.localizedDescription)"
             return
@@ -191,6 +231,7 @@ final class BackgroundVideoPanelModel: ObservableObject {
 
 struct BackgroundVideoPanelView: View {
     @ObservedObject var model: BackgroundVideoPanelModel
+    @ObservedObject private var player = BackgroundVideoPlayer.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -199,6 +240,14 @@ struct BackgroundVideoPanelView: View {
 
             HStack {
                 Button("Choose File…") { model.chooseFile() }
+                Button {
+                    model.togglePause()
+                } label: {
+                    Label(
+                        player.isPaused ? "Resume" : "Pause",
+                        systemImage: player.isPaused ? "play.fill" : "pause.fill")
+                }
+                .disabled(player.source == nil)
                 Spacer()
                 Button("Turn Off") { model.turnOff() }
                 Button("Play") { model.play() }
@@ -223,6 +272,9 @@ struct BackgroundVideoPanelView: View {
                     in: 0...1,
                     label: model.volume > 0 ? percent(model.volume) : "Off")
             }
+
+            Toggle("Keep playing in background", isOn: $model.playInBackground)
+                .help("Don't pause the video while the windows are covered or minimized.")
         }
         .padding(16)
         .frame(width: 440)
