@@ -229,6 +229,8 @@ class AppDelegate: NSObject,
         // Initial config loading
         ghosttyConfigDidChange(config: ghostty.config)
 
+        BackgroundVideoPanel.installMenuItem(in: menuCommandPalette?.menu)
+
         // Start our update checker.
         updateController.startUpdater()
 

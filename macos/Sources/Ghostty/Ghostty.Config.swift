@@ -78,6 +78,7 @@ extension Ghostty {
             }
 
             ghostty_config_load_recursive_files(cfg)
+            BackgroundVideoSettings.load(into: cfg)
 
             // TODO: we'd probably do some config loading here... for now we'd
             // have to do this synchronously. When we support config updating we can do
@@ -488,6 +489,40 @@ extension Ghostty {
             let key = "background-blur"
             _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
             return BackgroundBlur(fromCValue: v)
+        }
+
+        var backgroundVideo: String? {
+            guard let config = self.config else { return nil }
+            var v: UnsafePointer<Int8>?
+            let key = "background-video"
+            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return nil }
+            guard let ptr = v else { return nil }
+            let str = String(cString: ptr)
+            return str.isEmpty ? nil : str
+        }
+
+        var backgroundVideoOpacity: Double {
+            guard let config = self.config else { return 0.3 }
+            var v: Double = 0.3
+            let key = "background-video-opacity"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v.clamped(to: 0...1)
+        }
+
+        var backgroundVideoBlur: Double {
+            guard let config = self.config else { return 2 }
+            var v: Double = 2
+            let key = "background-video-blur"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
+        var backgroundVideoVolume: Double {
+            guard let config = self.config else { return 0 }
+            var v: Double = 0
+            let key = "background-video-volume"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v.clamped(to: 0...1)
         }
 
         var unfocusedSplitOpacity: Double {

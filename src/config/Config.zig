@@ -705,6 +705,36 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// Available since: 1.2.0
 @"background-image-repeat": bool = false,
 
+/// Video to play behind the terminal, looping. Only supported on macOS,
+/// where it can also be set from View > Background Video….
+///
+/// This can be a local file path, a direct link to a video file or HLS
+/// stream, or a page URL such as a YouTube video or live stream. Page URLs
+/// are resolved with `yt-dlp`, which must be installed separately (for
+/// example with `brew install yt-dlp`).
+///
+/// While a video is set, the terminal background is replaced by the video
+/// tinted with the background color at `background-video-opacity`, and
+/// `background-opacity` only applies once the video is turned off.
+///
+/// A single video is shared by every window and pauses while no window
+/// showing it is visible.
+@"background-video": ?[:0]const u8 = null,
+
+/// How strongly the background color covers `background-video`, from `0`
+/// (only the video) to `1` (the video is hidden).
+@"background-video-opacity": f64 = 0.3,
+
+/// Blur radius for `background-video`, in points. `0` shows the video
+/// sharp; the default of `2` softens it slightly.
+///
+/// This is separate from `background-blur`, which blurs the desktop behind
+/// the window and is what shows while the video is loading or turned off.
+@"background-video-blur": f64 = 2,
+
+/// Volume of `background-video`, from `0` (muted, the default) to `1`.
+@"background-video-volume": f64 = 0,
+
 /// The foreground and background color for selection. If this is not set, then
 /// the selection color is just the inverted window background and foreground
 /// (note: not to be confused with the cell bg/fg).

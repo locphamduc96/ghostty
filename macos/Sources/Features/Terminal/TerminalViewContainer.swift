@@ -10,6 +10,9 @@ class TerminalViewContainer: NSView {
     private(set) var glassEffectView: NSView?
     private var derivedConfig: DerivedConfig?
 
+    /// Video behind the terminal and glass, see `background-video`.
+    private var backgroundVideoView: BackgroundVideoView?
+
     var windowThemeFrameView: NSView? {
         window?.contentView?.superview
     }
@@ -75,6 +78,10 @@ class TerminalViewContainer: NSView {
     }
 
     func ghosttyConfigDidChange(_ config: Ghostty.Config, preferredBackgroundColor: NSColor?) {
+        updateBackgroundVideo(
+            config,
+            tintColor: preferredBackgroundColor ?? NSColor(config.backgroundColor))
+
         let newValue = DerivedConfig(config: config, preferredBackgroundColor: preferredBackgroundColor, cornerRadius: windowCornerRadius)
         guard newValue != derivedConfig else { return }
         derivedConfig = newValue
@@ -86,6 +93,40 @@ class TerminalViewContainer: NSView {
         } else {
             DispatchQueue.main.async(execute: updateGlassEffectIfNeeded)
         }
+    }
+}
+
+// MARK: Background Video
+
+extension TerminalViewContainer {
+    private func updateBackgroundVideo(_ config: Ghostty.Config, tintColor: NSColor) {
+        BackgroundVideoPlayer.shared.setSource(config.backgroundVideo)
+        BackgroundVideoPlayer.shared.setVolume(config.backgroundVideoVolume)
+
+        guard config.backgroundVideo != nil else {
+            backgroundVideoView?.removeFromSuperview()
+            backgroundVideoView = nil
+            return
+        }
+
+        let videoView = backgroundVideoView ?? addBackgroundVideoView()
+        videoView.blurRadius = CGFloat(config.backgroundVideoBlur)
+        videoView.tintColor = tintColor.withAlphaComponent(1)
+        videoView.tintOpacity = CGFloat(config.backgroundVideoOpacity)
+    }
+
+    private func addBackgroundVideoView() -> BackgroundVideoView {
+        let videoView = BackgroundVideoView()
+        videoView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(videoView, positioned: .below, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            videoView.topAnchor.constraint(equalTo: topAnchor),
+            videoView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            videoView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            videoView.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        backgroundVideoView = videoView
+        return videoView
     }
 }
 
