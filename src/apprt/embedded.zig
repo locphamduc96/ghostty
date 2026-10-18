@@ -1230,6 +1230,24 @@ pub const Surface = struct {
             // Remove this so that running `ghostty` within Ghostty works.
             _ = env.orderedRemove("GHOSTTY_MAC_LAUNCH_SOURCE");
 
+            // A Claude Code session that started us leaves its markers in our
+            // environment. A `claude` run in here would see them, take itself
+            // for a child of that session and not save its transcript, so it
+            // could not be resumed. These only identify the parent session,
+            // so nothing is lost by removing them.
+            const claude_session_vars = [_][]const u8{
+                "CLAUDECODE",
+                "CLAUDE_CODE_BRIDGE_SESSION_ID",
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_ENTRYPOINT",
+                "CLAUDE_CODE_MESSAGING_SOCKET",
+                "CLAUDE_CODE_MESSAGING_TOKEN",
+                "CLAUDE_CODE_SESSION_ATTENDED",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_PID",
+            };
+            for (claude_session_vars) |name| _ = env.orderedRemove(name);
+
             // If we were launched from the desktop then we want to
             // remove the LANGUAGE env var so that we don't inherit
             // our translation settings for Ghostty. If we aren't from
