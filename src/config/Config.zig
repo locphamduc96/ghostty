@@ -730,6 +730,15 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// when switching back. The video still stops while no window is open.
 @"background-video-play-in-background": bool = false,
 
+/// The highest frame rate `background-video` may use when the source offers
+/// several, such as a YouTube video or live stream. A lower value costs less
+/// CPU and battery, since fewer frames are decoded and blurred. The
+/// Background Video panel offers `30` and `60`.
+///
+/// This has no effect on local files and direct links, which play at their
+/// own frame rate.
+@"background-video-max-fps": u32 = 60,
+
 /// How strongly the background color covers `background-video`, from `0`
 /// (only the video) to `1` (the video is hidden).
 @"background-video-opacity": f64 = 0.3,

@@ -100,6 +100,8 @@ class TerminalViewContainer: NSView {
 
 extension TerminalViewContainer {
     private func updateBackgroundVideo(_ config: Ghostty.Config, tintColor: NSColor) {
+        // Before the source, so a new source resolves once at the right frame rate.
+        BackgroundVideoPlayer.shared.setMaxFps(config.backgroundVideoMaxFps)
         BackgroundVideoPlayer.shared.setSource(config.backgroundVideo)
         BackgroundVideoPlayer.shared.setVolume(config.backgroundVideoVolume)
         BackgroundVideoPlayer.shared.setPlaysInBackground(config.backgroundVideoPlayInBackground)

@@ -533,6 +533,15 @@ extension Ghostty {
             return v
         }
 
+        var backgroundVideoMaxFps: Int {
+            let defaultValue = 60
+            guard let config = self.config else { return defaultValue }
+            var v: UInt32 = UInt32(defaultValue)
+            let key = "background-video-max-fps"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v > 0 ? Int(v) : defaultValue
+        }
+
         var unfocusedSplitOpacity: Double {
             guard let config = self.config else { return 1 }
             var opacity: Double = 0.85

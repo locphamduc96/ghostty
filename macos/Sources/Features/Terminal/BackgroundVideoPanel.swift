@@ -15,6 +15,7 @@ enum BackgroundVideoSettings {
         var blur: Double
         var volume: Double
         var playInBackground: Bool
+        var maxFps: Int
     }
 
     static var configURL: URL {
@@ -40,6 +41,7 @@ enum BackgroundVideoSettings {
             background-video-blur = \(String(format: "%.1f", values.blur))
             background-video-volume = \(String(format: "%.2f", values.volume))
             background-video-play-in-background = \(values.playInBackground)
+            background-video-max-fps = \(values.maxFps)
 
             """
         try FileManager.default.createDirectory(
@@ -141,6 +143,11 @@ final class BackgroundVideoPanelModel: ObservableObject {
         didSet { tuningDidChange() }
     }
 
+    /// 30 or 60, the choices the panel offers.
+    @Published var maxFps = 60 {
+        didSet { tuningDidChange() }
+    }
+
     /// The saved video, as opposed to `link`, which may still be being typed.
     private var source: String?
     private var pendingSave: DispatchWorkItem?
@@ -159,6 +166,7 @@ final class BackgroundVideoPanelModel: ObservableObject {
         blur = config.backgroundVideoBlur
         volume = config.backgroundVideoVolume
         playInBackground = config.backgroundVideoPlayInBackground
+        maxFps = config.backgroundVideoMaxFps <= 30 ? 30 : 60
         error = nil
     }
 
@@ -204,6 +212,7 @@ final class BackgroundVideoPanelModel: ObservableObject {
         BackgroundVideoPlayer.shared.preview(opacity: opacity, blurRadius: blur)
         BackgroundVideoPlayer.shared.setVolume(volume)
         BackgroundVideoPlayer.shared.setPlaysInBackground(playInBackground)
+        BackgroundVideoPlayer.shared.setMaxFps(maxFps)
 
         pendingSave?.cancel()
         let save = DispatchWorkItem { [weak self] in self?.save() }
@@ -220,7 +229,8 @@ final class BackgroundVideoPanelModel: ObservableObject {
                 opacity: opacity,
                 blur: blur,
                 volume: volume,
-                playInBackground: playInBackground))
+                playInBackground: playInBackground,
+                maxFps: maxFps))
         } catch {
             self.error = "Could not save \(BackgroundVideoSettings.configURL.path): \(error.localizedDescription)"
             return
@@ -232,6 +242,7 @@ final class BackgroundVideoPanelModel: ObservableObject {
 struct BackgroundVideoPanelView: View {
     @ObservedObject var model: BackgroundVideoPanelModel
     @ObservedObject private var player = BackgroundVideoPlayer.shared
+    @ObservedObject private var login = BackgroundVideoLogin.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -271,10 +282,36 @@ struct BackgroundVideoPanelView: View {
                     value: $model.volume,
                     in: 0...1,
                     label: model.volume > 0 ? percent(model.volume) : "Off")
+                GridRow {
+                    Text("Frame rate")
+                    Picker("Frame rate", selection: $model.maxFps) {
+                        Text("30 fps").tag(30)
+                        Text("60 fps").tag(60)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .help("The highest frame rate to use for web links. Local files play at their own.")
+                    Text("")
+                }
             }
 
             Toggle("Keep playing in background", isOn: $model.playInBackground)
                 .help("Don't pause the video while the windows are covered or minimized.")
+
+            Divider()
+
+            HStack {
+                Text("YouTube account")
+                Text(login.isSignedIn ? "Signed in" : "Not signed in")
+                    .foregroundColor(.secondary)
+                Spacer()
+                if login.isSignedIn {
+                    Button("Sign Out") { login.signOut() }
+                } else {
+                    Button("Sign In…") { login.show() }
+                }
+            }
+            .help("YouTube sometimes asks yt-dlp to sign in to prove it is not a bot.")
         }
         .padding(16)
         .frame(width: 440)

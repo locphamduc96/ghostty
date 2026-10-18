@@ -36,6 +36,9 @@ final class BackgroundVideoPlayer: ObservableObject {
     /// From `background-video-play-in-background`.
     private(set) var playsInBackground = false
 
+    /// From `background-video-max-fps`.
+    private(set) var maxFps = 60
+
     /// Bumped on every source change or retry so late results from an older
     /// load are dropped.
     private var generation = 0
@@ -98,6 +101,23 @@ final class BackgroundVideoPlayer: ObservableObject {
         updatePlayback()
     }
 
+    /// The frame rate is picked when the link is resolved, so a change
+    /// resolves a web link again. Local files play at their own frame rate.
+    func setMaxFps(_ fps: Int) {
+        guard fps != maxFps else { return }
+        maxFps = fps
+        reloadWebLink()
+    }
+
+    /// Resolves a web link again, after the frame rate cap or the YouTube
+    /// sign-in changed. A local file is left playing.
+    func reloadWebLink() {
+        guard let source, source.lowercased().hasPrefix("http") else { return }
+        generation += 1
+        retryDelay = Self.initialRetryDelay
+        load()
+    }
+
     /// Applies tint and blur to every window right away, for the sliders in
     /// the Background Video panel. The saved config catches up on reload.
     func preview(opacity: Double, blurRadius: Double) {
@@ -136,12 +156,16 @@ final class BackgroundVideoPlayer: ObservableObject {
         guard let source else { return }
 
         let generation = self.generation
+        let maxFps = self.maxFps
         DispatchQueue.global(qos: .utility).async {
-            let result = Self.resolve(source)
+            let result = Self.resolve(source, maxFps: maxFps)
             DispatchQueue.main.async {
                 guard generation == self.generation else { return }
                 switch result {
                 case .success(let stream):
+                    // Host and path only: the query holds a signature.
+                    let target = (stream.url.host ?? "") + stream.url.path.prefix(60)
+                    Self.logger.info("background-video playing \(target, privacy: .public)")
                     self.setItem(self.makeItem(for: stream))
                 case .failure(let error):
                     Self.logger.warning("background-video unavailable: \(error.description, privacy: .public)")
@@ -209,7 +233,9 @@ final class BackgroundVideoPlayer: ObservableObject {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadTimeout) { [weak self, weak item] in
                 guard let self, let item, self.player.currentItem === item, item.status == .unknown else { return }
-                Self.logger.warning("background-video timed out loading, reloading")
+                let lastError = item.errorLog()?.events.last?.errorComment ?? "none"
+                Self.logger.warning(
+                    "background-video timed out loading, reloading (last error: \(lastError, privacy: .public))")
                 self.reportFailure("The video did not start loading within \(Int(Self.loadTimeout)) seconds.")
                 self.scheduleRetry()
             }
@@ -238,7 +264,7 @@ final class BackgroundVideoPlayer: ObservableObject {
 
 extension BackgroundVideoPlayer {
     struct Stream {
-        let url: URL
+        var url: URL
         let headers: [String: String]
 
         /// An HLS master playlist to play instead of `url`, carrying audio.
@@ -274,21 +300,27 @@ extension BackgroundVideoPlayer {
     /// HLS comes first: for long videos the single-file stream is gigabytes,
     /// and YouTube redirects the open-ended range requests AVPlayer makes for
     /// it, so playback never starts. An HLS format also comes with the master
-    /// playlist that carries the audio. Live streams only offer muxed HLS,
-    /// hence the later fallbacks.
-    private static let ytDlpFormat = [
-        "bestvideo[vcodec^=avc1][height<=1080][protocol^=m3u8]",
-        "bestvideo[vcodec^=avc1][height<=1080]",
-        "best[vcodec^=avc1][height<=1080]",
-        "best",
-    ].joined(separator: "/")
+    /// playlist that carries the audio. Muxed HLS comes right after video-only
+    /// HLS: it is all that the `web_safari` client and live streams offer, and
+    /// it must beat the single-file fallbacks. `fps<=?` also accepts formats
+    /// that don't report a frame rate.
+    private static func ytDlpFormat(maxFps: Int) -> String {
+        let limits = "[vcodec^=avc1][height<=1080][fps<=?\(maxFps)]"
+        return [
+            "bestvideo\(limits)[protocol^=m3u8]",
+            "best\(limits)[protocol^=m3u8]",
+            "bestvideo\(limits)",
+            "best\(limits)",
+            "best",
+        ].joined(separator: "/")
+    }
 
     /// Apps launched from the Dock get a minimal PATH, which hides Homebrew's
     /// yt-dlp and the JavaScript runtime it needs for YouTube.
     private static let extraSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"]
         .map { ($0 as NSString).expandingTildeInPath }
 
-    static func resolve(_ source: String) -> Result<Stream, ResolveError> {
+    static func resolve(_ source: String, maxFps: Int) -> Result<Stream, ResolveError> {
         let source = source.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let url = URL(string: source), let scheme = url.scheme?.lowercased() {
@@ -299,7 +331,7 @@ extension BackgroundVideoPlayer {
                 if directExtensions.contains(url.pathExtension.lowercased()) {
                     return .success(Stream(url: url, headers: [:]))
                 }
-                return resolveWithYtDlp(source)
+                return resolveWithYtDlp(source, maxFps: maxFps)
             }
         }
 
@@ -310,7 +342,21 @@ extension BackgroundVideoPlayer {
         return .success(Stream(url: URL(fileURLWithPath: path), headers: [:]))
     }
 
-    private static func resolveWithYtDlp(_ page: String) -> Result<Stream, ResolveError> {
+    private static func resolveWithYtDlp(_ page: String, maxFps: Int) -> Result<Stream, ResolveError> {
+        let result = runYtDlp(page, maxFps: maxFps, signedIn: false)
+
+        // YouTube asks for a sign-in when it takes a request for a bot, which
+        // happens on a VPN. Signing in changes which formats yt-dlp can see,
+        // and the plain run finds the HLS ones, so the sign-in is a fallback.
+        if case .failure(.ytDlpFailed(let message)) = result,
+           message.contains("Sign in to confirm"),
+           BackgroundVideoLogin.hasCookies {
+            return runYtDlp(page, maxFps: maxFps, signedIn: true)
+        }
+        return result
+    }
+
+    private static func runYtDlp(_ page: String, maxFps: Int, signedIn: Bool) -> Result<Stream, ResolveError> {
         let environment = ProcessInfo.processInfo.environment
         let searchPaths = extraSearchPaths + (environment["PATH"] ?? "").split(separator: ":").map(String.init)
         guard let ytDlp = searchPaths
@@ -321,7 +367,17 @@ extension BackgroundVideoPlayer {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ytDlp)
-        process.arguments = ["--dump-json", "--no-playlist", "--no-warnings", "-f", ytDlpFormat, page]
+        var arguments = ["--dump-json", "--no-playlist", "--no-warnings", "-f", ytDlpFormat(maxFps: maxFps), page]
+        if signedIn {
+            // The sign-in from the panel, instead of any browser the user's
+            // yt-dlp config reads cookies from. The default clients for a
+            // signed-in session offer no HLS, so ask for `web_safari` too.
+            arguments = [
+                "--no-cookies-from-browser", "--cookies", BackgroundVideoLogin.cookiesURL.path,
+                "--extractor-args", "youtube:player_client=default,web_safari",
+            ] + arguments
+        }
+        process.arguments = arguments
         process.environment = environment.merging(["PATH": searchPaths.joined(separator: ":")]) { $1 }
         process.standardInput = FileHandle.nullDevice
         let stdout = Pipe()
@@ -364,7 +420,13 @@ extension BackgroundVideoPlayer {
         if (info["protocol"] as? String)?.hasPrefix("m3u8") == true,
            let manifest = (info["manifest_url"] as? String).flatMap(URL.init(string:)),
            let multivariant = fetchText(manifest) {
-            stream.playlist = PlaylistLoader.narrow(multivariant)
+            if multivariant.contains("#EXT-X-MEDIA:TYPE=AUDIO") {
+                stream.playlist = PlaylistLoader.narrow(multivariant, maxFps: maxFps)
+            } else if let variant = PlaylistLoader.bestVariantURL(multivariant, relativeTo: manifest, maxFps: maxFps) {
+                // The variants carry their own audio, and `url` is not this
+                // variant's playlist: YouTube answers 403 to it.
+                stream.url = variant
+            }
         }
         return .success(stream)
     }
@@ -410,31 +472,50 @@ final class PlaylistLoader: NSObject, AVAssetResourceLoaderDelegate {
         return true
     }
 
-    /// Keeps only the best H.264 variant up to 1080p and its audio group.
-    /// YouTube lists a 240p variant first and gives every better variant a
-    /// different audio group; AVPlayer starts on the first variant and won't
-    /// switch audio groups, so it would otherwise stay at 240p.
-    static func narrow(_ multivariant: String) -> Data? {
-        struct Variant {
-            let height: Int
-            let bandwidth: Int
-            let index: Int
-            let audio: String?
-        }
+    private struct Variant {
+        let height: Int
+        let bandwidth: Int
+        let index: Int
+        let audio: String?
+    }
 
-        let lines = multivariant.components(separatedBy: .newlines)
+    /// The best H.264 variant up to 1080p and `maxFps`; `index` is its
+    /// `#EXT-X-STREAM-INF` line.
+    private static func bestVariant(in lines: [String], maxFps: Int) -> Variant? {
         var best: Variant?
         for (index, line) in lines.enumerated()
         where line.hasPrefix("#EXT-X-STREAM-INF:") && index + 1 < lines.count {
             let mapAttributes = attributes(of: line)
-            guard mapAttributes["CODECS"]?.hasPrefix("avc1") == true else { continue }
+            // Not hasPrefix: muxed variants list the audio codec first.
+            guard mapAttributes["CODECS"]?.contains("avc1") == true else { continue }
             let height = mapAttributes["RESOLUTION"]?.split(separator: "x").last.flatMap { Int($0) } ?? 0
             let bandwidth = mapAttributes["BANDWIDTH"].flatMap { Int($0) } ?? 0
             guard height <= 1080 else { continue }
+            // 29.97 and 59.94 are the usual "30" and "60", so allow a little slack.
+            let frameRate = mapAttributes["FRAME-RATE"].flatMap { Double($0) } ?? 0
+            guard frameRate <= Double(maxFps) + 1 else { continue }
             if let best, (height, bandwidth) <= (best.height, best.bandwidth) { continue }
             best = Variant(height: height, bandwidth: bandwidth, index: index, audio: mapAttributes["AUDIO"])
         }
-        guard let best else { return nil }
+        return best
+    }
+
+    /// The playlist of the best variant, to play on its own. For muxed
+    /// variants, which carry their audio, this avoids AVPlayer starting on
+    /// the lowest one, 144p on YouTube, and staying there.
+    static func bestVariantURL(_ multivariant: String, relativeTo base: URL, maxFps: Int) -> URL? {
+        let lines = multivariant.components(separatedBy: .newlines)
+        guard let best = bestVariant(in: lines, maxFps: maxFps) else { return nil }
+        return URL(string: lines[best.index + 1].trimmingCharacters(in: .whitespaces), relativeTo: base)?.absoluteURL
+    }
+
+    /// Keeps only the best H.264 variant up to 1080p and `maxFps`, and its
+    /// audio group. YouTube lists a 240p variant first and gives every better
+    /// variant a different audio group; AVPlayer starts on the first variant
+    /// and won't switch audio groups, so it would otherwise stay at 240p.
+    static func narrow(_ multivariant: String, maxFps: Int) -> Data? {
+        let lines = multivariant.components(separatedBy: .newlines)
+        guard let best = bestVariant(in: lines, maxFps: maxFps) else { return nil }
 
         let listHeaderPrefixes = ["#EXTM3U", "#EXT-X-VERSION", "#EXT-X-INDEPENDENT-SEGMENTS"]
         var listOutput = lines.filter { line in listHeaderPrefixes.contains { line.hasPrefix($0) } }
