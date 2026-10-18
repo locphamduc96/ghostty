@@ -1875,6 +1875,100 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            case assistant
+        }
+
+        /// Coding assistants that are brought back when a window is restored,
+        /// by a name their process answers to, see `names(of:)`.
+        private static let restorableAssistants = ["claude"]
+
+        /// Programs that run a script, whose first argument is then the name.
+        private static let interpreters = ["node", "bun", "deno"]
+
+        /// Directories that already had `claude --continue` typed this launch.
+        private static var continuedDirectories = Set<String>()
+
+        private static func processName(of pid: Int) -> String? {
+            var buffer = [CChar](repeating: 0, count: 256)
+            guard proc_name(Int32(pid), &buffer, UInt32(buffer.count)) > 0 else { return nil }
+            return String(cString: buffer)
+        }
+
+        private static func executablePath(of pid: Int) -> String? {
+            var buffer = [CChar](repeating: 0, count: 4096)
+            guard proc_pidpath(Int32(pid), &buffer, UInt32(buffer.count)) > 0 else { return nil }
+            return String(cString: buffer)
+        }
+
+        /// The arguments the process was started with, `argv[0]` first.
+        private static func arguments(of pid: Int) -> [String]? {
+            var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, Int32(pid)]
+            var size = 0
+            guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
+                  size > MemoryLayout<Int32>.size else { return nil }
+            var buffer = [UInt8](repeating: 0, count: size)
+            guard sysctl(&mib, UInt32(mib.count), &buffer, &size, nil, 0) == 0 else { return nil }
+
+            // The layout is argc, the executable path, the NULs padding it, then
+            // the arguments separated by NULs.
+            let argc = buffer.prefix(MemoryLayout<Int32>.size).withUnsafeBytes { $0.load(as: Int32.self) }
+            var index = MemoryLayout<Int32>.size
+            while index < size, buffer[index] != 0 { index += 1 }
+            while index < size, buffer[index] == 0 { index += 1 }
+
+            var result: [String] = []
+            while index < size, result.count < Int(argc) {
+                var end = index
+                while end < size, buffer[end] != 0 { end += 1 }
+                result.append(String(bytes: buffer[index..<end], encoding: .utf8) ?? "")
+                index = end + 1
+            }
+            return result
+        }
+
+        /// The names a process answers to: its own, the folders its program lives
+        /// in, and what it was started as. The process name alone is not enough:
+        /// `claude` is a link to a program named after its version, so the process
+        /// is called `2.1.302`, while the folder is `claude` and it was started as
+        /// `claude`.
+        private static func names(of pid: Int) -> Set<String> {
+            var names = Set<String>()
+            if let name = processName(of: pid) { names.insert(name) }
+            if let path = executablePath(of: pid) {
+                names.formUnion(URL(fileURLWithPath: path).pathComponents)
+            }
+            if let first = arguments(of: pid)?.first {
+                let program = URL(fileURLWithPath: first).lastPathComponent
+                names.insert(program)
+                // `claude` installed with npm runs as `node` with the script as its argument.
+                if interpreters.contains(program),
+                   let script = arguments(of: pid)?.dropFirst().first {
+                    names.insert(URL(fileURLWithPath: script).lastPathComponent)
+                }
+            }
+            return names
+        }
+
+        /// The coding assistant running in this terminal right now, if any.
+        private var runningAssistant: String? {
+            guard let pid = surfaceModel?.foregroundPID else { return nil }
+            let names = Self.names(of: pid)
+            return Self.restorableAssistants.first(where: names.contains)
+        }
+
+        /// What to type to resume `assistant` in `directory`. `--continue` picks
+        /// the latest conversation of a directory, so a second terminal in the
+        /// same one gets `--resume` and its list instead of the same conversation.
+        static func restoreCommand(for assistant: String, directory: String?) -> String? {
+            switch assistant {
+            case "claude":
+                guard let directory, continuedDirectories.insert(directory).inserted else {
+                    return "claude --resume"
+                }
+                return "claude --continue"
+            default:
+                return nil
+            }
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1902,6 +1996,17 @@ extension Ghostty {
                     self.titleFromTerminal = title
                 }
             }
+
+            // Type the command that resumes the assistant that was running here.
+            // There is no enter: the shell may still be starting, and the person
+            // should decide when to pick the conversation back up.
+            let assistant = try container.decodeIfPresent(String.self, forKey: .assistant)
+            if let assistant,
+               appDel.ghostty.config.restoreAiSession,
+               let command = Self.restoreCommand(for: assistant, directory: config.workingDirectory) {
+                AppDelegate.logger.debug("restoring \(assistant, privacy: .public): typing \(command, privacy: .public)")
+                self.surfaceModel?.sendText(command)
+            }
         }
 
         func encode(to encoder: Encoder) throws {
@@ -1910,6 +2015,7 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+            try container.encodeIfPresent(runningAssistant, forKey: .assistant)
         }
     }
 }

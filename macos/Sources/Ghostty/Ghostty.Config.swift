@@ -221,6 +221,14 @@ extension Ghostty {
             return String(cString: ptr)
         }
 
+        var restoreAiSession: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "restore-ai-session"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var windowPositionX: Int16? {
             guard let config = self.config else { return nil }
             var v: Int16 = 0

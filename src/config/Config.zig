@@ -2347,6 +2347,20 @@ keybind: Keybinds = .{},
 /// This is currently only supported on macOS. This has no effect on Linux.
 @"window-save-state": WindowSaveState = .default,
 
+/// Bring back a coding assistant when a restored terminal comes up, see
+/// `window-save-state`. A terminal that was running `claude` when its window
+/// state was saved gets `claude --continue` typed at its prompt, without
+/// pressing enter, so one keypress picks up the same conversation. When
+/// several terminals in the same directory were running it, the later ones
+/// get `claude --resume`, which lists the conversations to choose from.
+///
+/// This restores the conversation, not the work that was running: the process
+/// itself is gone once Ghostty quits.
+///
+/// This is currently only supported on macOS, and only has an effect while
+/// window state is saved.
+@"restore-ai-session": bool = true,
+
 /// Resize the window in discrete increments of the focused surface's cell size.
 /// If this is disabled, surfaces are resized in pixel increments. Currently
 /// only supported on macOS.
